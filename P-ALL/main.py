@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 import re
 from urllib.parse import urlparse
 from pathlib import Path
+from rich import box
 
 # Install rich traceback handler
 install()
@@ -35,15 +36,29 @@ install()
 # Load environment variables
 load_dotenv()
 
+# Get the current script's directory
+SCRIPT_DIR = Path(__file__).resolve().parent
+
 # Configure logging with more detailed format
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[
-        RichHandler(rich_tracebacks=True, markup=True),
-        logging.FileHandler(Path('logs') / f'p-all_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-    ]
-)
+def setup_logging():
+    # Create logs directory if it doesn't exist
+    logs_dir = SCRIPT_DIR / 'logs'
+    logs_dir.mkdir(exist_ok=True)
+    
+    # Create log file path
+    log_file = logs_dir / f'p-all_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+        handlers=[
+            RichHandler(rich_tracebacks=True, markup=True),
+            logging.FileHandler(log_file)
+        ]
+    )
+
+# Initialize logging
+setup_logging()
 logger = logging.getLogger(__name__)
 console = Console()
 
@@ -135,10 +150,13 @@ class PAllScanner:
         self.module_order: Dict[str, int] = {}
         self.args = args
         
-        # Create necessary directories
-        Path('logs').mkdir(exist_ok=True)
-        Path('reports').mkdir(exist_ok=True)
-        Path('payloads').mkdir(exist_ok=True)
+        # Create necessary directories using absolute paths
+        self.logs_dir = SCRIPT_DIR / 'logs'
+        self.reports_dir = SCRIPT_DIR / 'reports'
+        self.payloads_dir = SCRIPT_DIR / 'payloads'
+        
+        for directory in [self.logs_dir, self.reports_dir, self.payloads_dir]:
+            directory.mkdir(exist_ok=True)
 
     async def get_user_input(self) -> bool:
         """Get and validate target input from user with improved UI"""
@@ -276,56 +294,39 @@ class PAllScanner:
                 # 모듈 선택 메뉴 표시
                 self.console.print("\n[bold blue]실행할 모듈을 선택하세요:[/bold blue]")
                 
-                # 모듈 목록을 2열로 표시
-                table = Table(show_header=False, box=None)
-                table.add_column("모듈", style="cyan", width=40)
-                table.add_column("상태", style="green", width=10)
-                table.add_column("모듈", style="cyan", width=40)
-                table.add_column("상태", style="green", width=10)
+                # 모듈 목록을 테이블로 표시
+                table = Table(show_header=True, box=box.ROUNDED)
+                table.add_column("번호", style="cyan", width=5)
+                table.add_column("모듈", style="green", width=20)
+                table.add_column("설명", style="yellow", width=50)
+                table.add_column("상태", style="red", width=10)
+                table.add_column("의존성", style="blue", width=20)
                 
-                # 모듈 목록을 2열로 구성
-                modules_list = list(MODULES.items())
-                half = (len(modules_list) + 1) // 2
-                
-                for i in range(half):
-                    row = []
-                    # 첫 번째 열
-                    module_id1, module_info1 = modules_list[i]
-                    status1 = "[green]✓[/green]" if module_id1 in self.selected_modules else "[red]✗[/red]"
-                    row.extend([f"{i+1}. {module_info1['name']}", status1])
-                    
-                    # 두 번째 열 (있는 경우)
-                    if i + half < len(modules_list):
-                        module_id2, module_info2 = modules_list[i + half]
-                        status2 = "[green]✓[/green]" if module_id2 in self.selected_modules else "[red]✗[/red]"
-                        row.extend([f"{i+half+1}. {module_info2['name']}", status2])
-                    else:
-                        row.extend(["", ""])
-                    
-                    table.add_row(*row)
+                for i, (module_id, module_info) in enumerate(MODULES.items(), 1):
+                    status = "[green]✓[/green]" if module_id in self.selected_modules else "[red]✗[/red]"
+                    dependencies = ", ".join(module_info['dependencies']) if module_info['dependencies'] else "없음"
+                    table.add_row(
+                        str(i),
+                        module_info['name'],
+                        module_info['description'],
+                        status,
+                        dependencies
+                    )
                 
                 self.console.print(table)
                 
                 # 기능 버튼 표시
                 self.console.print("\n[bold blue]기능 선택:[/bold blue]")
                 self.console.print("1. 선택 완료")
-                self.console.print("2. 모듈 순서 설정")
-                self.console.print("3. 개별 모듈 실행")
-                self.console.print("4. 취소")
+                self.console.print("2. 취소")
                 
                 choice = await self._get_valid_input(
                     "선택: ",
-                    [str(i) for i in range(1, 5)]
+                    [str(i) for i in range(1, 3)]
                 )
                 
-                if choice == "4":  # 취소
+                if choice == "2":  # 취소
                     return False
-                elif choice == "3":  # 개별 모듈 실행
-                    if not await self._run_single_module():
-                        continue
-                elif choice == "2":  # 모듈 순서 설정
-                    if not await self._set_module_order():
-                        continue
                 elif choice == "1":  # 선택 완료
                     if not self.selected_modules:
                         self.console.print("[bold red]하나 이상의 모듈을 선택해야 합니다.[/bold red]")
@@ -347,187 +348,18 @@ class PAllScanner:
             logger.error(f"개별 모듈 선택 중 오류 발생: {e}")
             return False
 
-    async def _run_single_module(self) -> bool:
-        """개별 모듈을 실행합니다."""
-        try:
-            self.console.print("\n[bold blue]실행할 모듈을 선택하세요:[/bold blue]")
-            
-            # 모듈 목록 표시
-            for i, (module_id, module_info) in enumerate(MODULES.items(), 1):
-                self.console.print(f"{i}. {module_info['name']} - {module_info['description']}")
-            
-            self.console.print(f"{len(MODULES) + 1}. 취소")
-            
-            choice = await self._get_valid_input(
-                "선택: ",
-                [str(i) for i in range(1, len(MODULES) + 2)]
-            )
-            
-            if choice == str(len(MODULES) + 1):  # 취소
-                return True
-            
-            module_id = list(MODULES.keys())[int(choice) - 1]
-            module_info = MODULES[module_id]
-            
-            if module_info['requires_url'] and not self.is_url:
-                self.console.print(f"[bold red]{module_info['name']} 모듈은 URL 대상에만 사용할 수 있습니다.[/bold red]")
-                return False
-            
-            # 의존성 모듈 체크
-            for dep in module_info['dependencies']:
-                if dep not in self.selected_modules:
-                    self.console.print(f"[yellow]의존성 모듈 {MODULES[dep]['name']}이(가) 필요합니다.[/yellow]")
-                    return False
-            
-            # 개별 모듈 실행
-            target = self.target_url if self.is_url else self.target_ip
-            self.console.print(Panel(
-                f"[bold blue]모듈 실행: {module_info['name']}[/bold blue]\n"
-                f"대상: {target}\n"
-                f"설명: {module_info['description']}",
-                title="P-ALL Scanner"
-            ))
-            
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                console=self.console
-            ) as progress:
-                task_id = progress.add_task(
-                    f"[cyan]{module_info['name']} 실행 중...[/cyan]", 
-                    total=100
-                )
-                
-                try:
-                    # 모듈별 실행 함수 호출
-                    if module_id == 'port':
-                        await self._scan_ports(target, progress, task_id)
-                    elif module_id == 'web' and self.is_url:
-                        await self._scan_web(target, progress, task_id)
-                    elif module_id == 'ssh' and not self.is_url:
-                        await self._scan_ssh(target, progress, task_id)
-                    elif module_id == 'nmap':
-                        await self._scan_nmap(target, progress, task_id)
-                    elif module_id == 'js' and self.is_url:
-                        await self._scan_js(target, progress, task_id)
-                except Exception as e:
-                    # 에러 발생 시 자동 수정 시도
-                    error_handler = ErrorHandler()
-                    correction = error_handler.handle_error(e)
-                    
-                    if correction:
-                        self.console.print(f"[yellow]에러 발생: {str(e)}[/yellow]")
-                        self.console.print(f"[green]자동 수정 시도: {correction}[/green]")
-                        
-                        # 수정 후 재시도
-                        progress.update(task_id, description="[cyan]수정 후 재시도 중...[/cyan]")
-                        if module_id == 'port':
-                            await self._scan_ports(target, progress, task_id)
-                        elif module_id == 'web' and self.is_url:
-                            await self._scan_web(target, progress, task_id)
-                        elif module_id == 'ssh' and not self.is_url:
-                            await self._scan_ssh(target, progress, task_id)
-                        elif module_id == 'nmap':
-                            await self._scan_nmap(target, progress, task_id)
-                        elif module_id == 'js' and self.is_url:
-                            await self._scan_js(target, progress, task_id)
-                    else:
-                        progress.update(task_id, completed=100, description="[red]실행 실패[/red]")
-                        self.console.print(f"[bold red]에러 발생: {str(e)}[/bold red]")
-                        self.console.print("[yellow]자동 수정이 불가능한 에러입니다. 수동으로 확인해주세요.[/yellow]")
-                        return False
-            
-            # 결과 표시
-            self.console.print("\n[bold green]모듈 실행 완료[/bold green]")
-            if module_id in self.results:
-                self.console.print(Panel(
-                    str(self.results[module_id]),
-                    title=f"{module_info['name']} 결과"
-                ))
-            
-            # 추가 실행 여부 확인
-            self.console.print("\n[bold blue]추가 작업 선택:[/bold blue]")
-            self.console.print("1. 다른 모듈 실행")
-            self.console.print("2. 메인 메뉴로 돌아가기")
-            
-            choice = await self._get_valid_input(
-                "선택: ",
-                ['1', '2']
-            )
-            
-            if choice == '1':
-                return await self._run_single_module()
-            else:
-                return True
-            
-        except Exception as e:
-            logger.error(f"개별 모듈 실행 중 오류 발생: {e}")
-            self.console.print(f"[bold red]오류 발생: {e}[/bold red]")
-            return False
-
-    async def _set_module_order(self) -> bool:
-        """선택된 모듈의 실행 순서를 설정합니다."""
-        try:
-            if not self.selected_modules:
-                self.console.print("[bold red]먼저 모듈을 선택해야 합니다.[/bold red]")
-                return False
-
-            self.console.print("\n[bold blue]모듈 실행 순서 설정[/bold blue]")
-            self.console.print("각 모듈에 대해 실행 순서를 입력하세요 (1부터 시작)")
-            
-            # 의존성 체크 및 기본 순서 설정
-            self.module_order = {}
-            for module_id in self.selected_modules:
-                module_info = MODULES[module_id]
-                # 의존성 모듈이 선택되지 않은 경우 추가
-                for dep in module_info['dependencies']:
-                    if dep not in self.selected_modules:
-                        self.selected_modules.append(dep)
-                        self.console.print(f"[yellow]의존성 모듈 {MODULES[dep]['name']}이(가) 자동으로 추가되었습니다.[/yellow]")
-                
-                # 기본 순서 설정
-                self.module_order[module_id] = module_info['default_order']
-
-            # 순서 입력 받기
-            for module_id in self.selected_modules:
-                while True:
-                    try:
-                        order = int(await self._get_valid_input(
-                            f"{MODULES[module_id]['name']}의 실행 순서 (현재: {self.module_order[module_id]}): ",
-                            [str(i) for i in range(1, len(self.selected_modules) + 1)]
-                        ))
-                        self.module_order[module_id] = order
-                        break
-                    except ValueError:
-                        self.console.print("[bold red]잘못된 입력입니다. 숫자를 입력하세요.[/bold red]")
-
-            # 순서대로 정렬
-            self.selected_modules.sort(key=lambda x: self.module_order[x])
-            
-            # 순서 확인
-            self.console.print("\n[bold blue]설정된 모듈 실행 순서:[/bold blue]")
-            for i, module_id in enumerate(self.selected_modules, 1):
-                self.console.print(f"{i}. {MODULES[module_id]['name']}")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"모듈 순서 설정 중 오류 발생: {e}")
-            return False
-
     async def scan(self, scan_type: str = "all") -> Dict:
         """선택된 모듈에 따라 스캔을 수행합니다."""
         try:
             target = self.target_url if self.is_url else self.target_ip
             self.scan_start_time = datetime.now()
             
+            # 스캔 시작 정보 표시
             self.console.print(Panel(
                 f"[bold blue]스캔 시작: {target}[/bold blue]\n"
                 f"시작 시간: {self.scan_start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"실행 순서:\n" + "\n".join([
-                    f"{i+1}. {MODULES[m]['name']}" 
+                    f"{i+1}. {MODULES[m]['name']} (타임아웃: {MODULES[m]['timeout']}초, 스레드: {MODULES[m]['threads']})" 
                     for i, m in enumerate(self.selected_modules)
                 ]),
                 title="P-ALL Scanner"
@@ -543,21 +375,59 @@ class PAllScanner:
                 
                 # 선택된 모듈을 순서대로 실행
                 for module_id in self.selected_modules:
+                    module_info = MODULES[module_id]
                     task_id = progress.add_task(
-                        f"[cyan]{MODULES[module_id]['name']} 실행 중...[/cyan]", 
+                        f"[cyan]{module_info['name']} 실행 중...[/cyan]", 
                         total=100
                     )
                     
-                    if module_id == 'port':
-                        await self._scan_ports(target, progress, task_id)
-                    elif module_id == 'web' and self.is_url:
-                        await self._scan_web(target, progress, task_id)
-                    elif module_id == 'ssh' and not self.is_url:
-                        await self._scan_ssh(target, progress, task_id)
-                    elif module_id == 'nmap':
-                        await self._scan_nmap(target, progress, task_id)
-                    elif module_id == 'js' and self.is_url:
-                        await self._scan_js(target, progress, task_id)
+                    # 모듈 실행 정보 표시
+                    self.console.print(Panel(
+                        f"[bold blue]모듈 실행: {module_info['name']}[/bold blue]\n"
+                        f"대상: {target}\n"
+                        f"설명: {module_info['description']}\n"
+                        f"타임아웃: {module_info['timeout']}초\n"
+                        f"스레드: {module_info['threads']}",
+                        title="P-ALL Scanner"
+                    ))
+                    
+                    try:
+                        if module_id == 'port':
+                            await self._scan_ports(target, progress, task_id)
+                        elif module_id == 'web' and self.is_url:
+                            await self._scan_web(target, progress, task_id)
+                        elif module_id == 'ssh' and not self.is_url:
+                            await self._scan_ssh(target, progress, task_id)
+                        elif module_id == 'nmap':
+                            await self._scan_nmap(target, progress, task_id)
+                        elif module_id == 'js' and self.is_url:
+                            await self._scan_js(target, progress, task_id)
+                    except Exception as e:
+                        # 에러 발생 시 자동 수정 시도
+                        error_handler = ErrorHandler()
+                        correction = error_handler.handle_error(e)
+                        
+                        if correction:
+                            self.console.print(f"[yellow]에러 발생: {str(e)}[/yellow]")
+                            self.console.print(f"[green]자동 수정 시도: {correction}[/green]")
+                            
+                            # 수정 후 재시도
+                            progress.update(task_id, description="[cyan]수정 후 재시도 중...[/cyan]")
+                            if module_id == 'port':
+                                await self._scan_ports(target, progress, task_id)
+                            elif module_id == 'web' and self.is_url:
+                                await self._scan_web(target, progress, task_id)
+                            elif module_id == 'ssh' and not self.is_url:
+                                await self._scan_ssh(target, progress, task_id)
+                            elif module_id == 'nmap':
+                                await self._scan_nmap(target, progress, task_id)
+                            elif module_id == 'js' and self.is_url:
+                                await self._scan_js(target, progress, task_id)
+                        else:
+                            progress.update(task_id, completed=100, description="[red]실행 실패[/red]")
+                            self.console.print(f"[bold red]에러 발생: {str(e)}[/bold red]")
+                            self.console.print("[yellow]자동 수정이 불가능한 에러입니다. 수동으로 확인해주세요.[/yellow]")
+                            continue
 
             self.scan_end_time = datetime.now()
             return {
@@ -759,8 +629,7 @@ class PAllScanner:
                 ))
 
         # 보고서 저장
-        report_path = Path('reports') / f'p-all_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.md'
-        Path('reports').mkdir(exist_ok=True)
+        report_path = self.reports_dir / f'p-all_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.md'
         
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(f"# P-ALL 보안 스캔 보고서\n\n")
@@ -778,6 +647,46 @@ class PAllScanner:
 
         self.console.print(f"\n[green]보고서가 저장되었습니다: {report_path}[/green]")
 
+    async def main_menu(self) -> None:
+        """메인 메뉴를 표시하고 사용자 입력을 처리합니다."""
+        try:
+            while True:
+                self.console.print(Panel(
+                    "[bold blue]P-ALL 보안 스캐너[/bold blue]\n\n"
+                    "1. 전체 스캔 실행\n"
+                    "2. 개별 모듈 선택 및 실행\n"
+                    "3. 보고서 생성\n"
+                    "4. 종료",
+                    title="메인 메뉴"
+                ))
+                
+                choice = await self._get_valid_input(
+                    "선택: ",
+                    [str(i) for i in range(1, 5)]
+                )
+                
+                if choice == "1":  # 전체 스캔
+                    if not self.selected_modules:
+                        self.console.print("[bold red]먼저 모듈을 선택해야 합니다.[/bold red]")
+                        continue
+                    await self.scan()
+                elif choice == "2":  # 개별 모듈 선택
+                    if not await self._select_individual_modules():
+                        continue
+                    await self.scan()
+                elif choice == "3":  # 보고서 생성
+                    if not self.results:
+                        self.console.print("[bold red]먼저 스캔을 실행해야 합니다.[/bold red]")
+                        continue
+                    self.generate_report()
+                elif choice == "4":  # 종료
+                    self.console.print("[bold blue]프로그램을 종료합니다.[/bold blue]")
+                    break
+                    
+        except Exception as e:
+            logger.error(f"메인 메뉴 처리 중 오류 발생: {e}")
+            self.console.print(f"[bold red]오류 발생: {e}[/bold red]")
+
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='P-ALL: 통합 보안 스캐너')
@@ -793,27 +702,21 @@ def parse_args():
     return parser.parse_args()
 
 async def main():
-    """Main function with improved error handling"""
+    """메인 함수"""
     try:
-        args = parse_args()
+        # ASCII 아트 배너 표시
         console.print(BANNER)
         
-        # Initialize scanner
-        scanner = PAllScanner(args)
+        # 스캐너 초기화
+        scanner = PAllScanner(parse_args())
         
-        # Get target input
+        # 대상 입력 받기
         if not await scanner.get_user_input():
             console.print("[yellow]프로그램을 종료합니다.[/yellow]")
             return
-        
-        # Perform scan
-        results = await scanner.scan()
-        
-        if results['status'] == 'success':
-            # Generate report
-            scanner.generate_report()
-        else:
-            console.print(f"[bold red]스캔 실패: {results.get('error', '알 수 없는 오류')}[/bold red]")
+            
+        # 메인 메뉴 실행
+        await scanner.main_menu()
         
     except KeyboardInterrupt:
         console.print("\n[yellow]사용자에 의해 프로그램이 중단되었습니다.[/yellow]")
