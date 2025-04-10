@@ -1,0 +1,25 @@
+{
+    "scan_settings": {
+        "timeout": 30,
+        "max_retries": 3,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    },
+    "xss_scanner": {
+        "test_stored_xss": true,
+        "max_payloads": 100,
+        "follow_redirects": true
+    },
+    "sql_injection_scanner": {
+        "test_boolean_based": true,
+        "test_error_based": true,
+        "test_union_based": true,
+        "test_time_based": true,
+        "max_payloads": 100
+    },
+    "reporting": {
+        "format": "json",
+        "output_directory": "reports",
+        "include_request_details": true,
+        "include_response_details": true
+    }
+} 
